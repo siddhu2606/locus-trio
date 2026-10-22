@@ -45,9 +45,9 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * LOCUS Trio: three phones, each one both beacon and receiver, at the same time.
- * Every phone advertises a small packet and scans for the other two. The packet also carries the readings that phone has made,
- * so all three phones end up holding all six directional readings and draw the same triangle. No fixed anchors, no Wi-Fi needed.
+ * LOCUS Trio: 3 to 6 devices, each one both beacon and receiver, at the same time.
+ * Every device advertises a small packet and scans for the others. The packet also carries the readings that device has made,
+ * so all devices end up holding every directional reading and draw the same layout. No fixed anchors, no Wi-Fi needed.
  */
 public class MainActivity extends Activity {
     static final int COMPANY = 0xFFFF;
@@ -55,10 +55,10 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private LinearLayout root;
     private TextView status, advLine, scanLine, table, addr, calInfo;
-    private TriangleView triView;
+    private NetworkView triView;
     private SharedPreferences prefs;
 
-    private int me = 0;
+    private int me = 0, n = 3;
     private TrioMesh mesh;
     private boolean running = false, advertising = false, scanning = false, useLegacy = false, advStarting = false;
     private BluetoothLeAdvertiser advertiser;
@@ -66,7 +66,7 @@ public class MainActivity extends Activity {
     private BluetoothLeScanner scanner;
     private TrioServer server;
     private long scanStarted, tickNo = 0;
-    private int anySeen = 0, trioSeen = 0;
+    private int anySeen = 0, trioSeen = 0, sizeMismatch = 0;
     private double knownMetres = 1.0;
     private String advNote = "";
 
@@ -75,7 +75,8 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         prefs = getSharedPreferences("trio", MODE_PRIVATE);
-        me = prefs.getInt("me", 0);
+        n = Math.max(TrioMath.MIN_N, Math.min(TrioMath.MAX_N, prefs.getInt("n", 3)));
+        me = Math.min(prefs.getInt("me", 0), n - 1);
         ScrollView sv = new ScrollView(this);
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -127,22 +128,31 @@ public class MainActivity extends Activity {
         stopAll();
         root.removeAllViews();
         root.addView(text("LOCUS Trio", 26, true, "#0B3A4A"));
-        root.addView(text("Three phones. Each one is a beacon and a receiver at the same time. Together they work out the shape of the triangle between them.", 15, false, "#3F6572"));
-        root.addView(text("Which phone is this?", 16, true, "#0B3A4A"));
+        root.addView(text("Every device is a beacon and a receiver at the same time. Together they work out the shape of the layout between them. Works with 3 to 6 devices: phones, a laptop running the Python node, ESP32 boards.", 15, false, "#3F6572"));
+        root.addView(text("How many devices are in the mesh?", 16, true, "#0B3A4A"));
+        LinearLayout cnt = new LinearLayout(this);
+        cnt.setOrientation(LinearLayout.HORIZONTAL);
+        for (int k = TrioMath.MIN_N; k <= TrioMath.MAX_N; k++) {
+            final int kk = k;
+            Button x = small(String.valueOf(k), v -> { n = kk; me = Math.min(me, n - 1); prefs.edit().putInt("n", n).putInt("me", me).apply(); home(); });
+            x.setAlpha(k == n ? 1f : 0.45f);
+            cnt.addView(x);
+        }
+        root.addView(cnt);
+        root.addView(text("Which device is this one? Give every device a different letter.", 16, true, "#0B3A4A"));
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        final Button[] bs = new Button[3];
-        for (int i = 0; i < 3; i++) {
+        final Button[] bs = new Button[n];
+        for (int i = 0; i < n; i++) {
             final int id = i;
-            Button x = small("Phone " + (char) ('A' + i), v -> { me = id; prefs.edit().putInt("me", me).apply(); for (int k = 0; k < 3; k++) bs[k].setAlpha(k == id ? 1f : 0.45f); });
+            Button x = small(String.valueOf((char) ('A' + i)), v -> { me = id; prefs.edit().putInt("me", me).apply(); for (int k = 0; k < n; k++) bs[k].setAlpha(k == id ? 1f : 0.45f); });
             x.setAlpha(i == me ? 1f : 0.45f);
             bs[i] = x;
             row.addView(x);
         }
         root.addView(row);
-        root.addView(text("Give each of the three phones a different letter.", 13, false, "#7A9AA6"));
         root.addView(button("Start", "#10B981", v -> startRun()));
-        root.addView(text("Before you press Start: Bluetooth on, Location on. Keep the screen on and the app open on all three phones. Place them a few metres apart, at the same height.", 13, false, "#3F6572"));
+        root.addView(text("Before you press Start: Bluetooth on, Location on. Keep the screen on and the app open. Place the devices a few metres apart, at the same height. A laptop or ESP32 joins by using one of the letters.", 13, false, "#3F6572"));
     }
 
     // ---------- permissions ----------
@@ -176,22 +186,22 @@ public class MainActivity extends Activity {
 
     // ---------- running screen ----------
     private void startRun() {
-        mesh = new TrioMesh(me);
+        mesh = new TrioMesh(me, n);
         mesh.rssi1m = prefs.getFloat("rssi1m", -59f);
-        mesh.n = prefs.getFloat("n", 2.2f);
+        mesh.pathLoss = prefs.getFloat("pl", 2.2f);
         knownMetres = prefs.getFloat("known", 1.0f);
         running = true;
         anySeen = 0; trioSeen = 0; advNote = "";
         root.removeAllViews();
-        root.addView(text("Phone " + (char) ('A' + me) + " is running", 22, true, "#0B3A4A"));
+        root.addView(text("Device " + (char) ('A' + me) + " of " + n + " is running", 22, true, "#0B3A4A"));
         status = text("Starting…", 15, true, "#0B8A5E");
         advLine = text("", 13, false, "#3F6572");
         scanLine = text("", 13, false, "#3F6572");
         root.addView(status);
         root.addView(advLine);
         root.addView(scanLine);
-        triView = new TriangleView(this);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(240));
+        triView = new NetworkView(this);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(260));
         lp.setMargins(0, dp(8), 0, dp(8));
         triView.setLayoutParams(lp);
         root.addView(triView);
@@ -209,12 +219,12 @@ public class MainActivity extends Activity {
         root.addView(r1);
         root.addView(button("Calibrate with the real A–B distance", "#22C3E6", v -> {
             if (mesh.calibrate(0, 1, knownMetres, System.currentTimeMillis())) { prefs.edit().putFloat("rssi1m", (float) mesh.rssi1m).apply(); status.setText("Calibrated: A–B is now " + String.format(Locale.US, "%.1f", knownMetres) + " m."); }
-            else status.setText("The A–B link has not been heard yet. Wait a few seconds with both phones running.");
+            else status.setText("The A–B link has not been heard yet. Wait a few seconds with both devices running.");
         }));
         LinearLayout r2 = new LinearLayout(this);
         r2.setOrientation(LinearLayout.HORIZONTAL);
-        r2.addView(small("Walls / clutter −", v -> { mesh.n = Math.max(1.6, mesh.n - 0.1); prefs.edit().putFloat("n", (float) mesh.n).apply(); }));
-        r2.addView(small("Walls / clutter +", v -> { mesh.n = Math.min(4.0, mesh.n + 0.1); prefs.edit().putFloat("n", (float) mesh.n).apply(); }));
+        r2.addView(small("Walls / clutter −", v -> { mesh.pathLoss = Math.max(1.6, mesh.pathLoss - 0.1); prefs.edit().putFloat("pl", (float) mesh.pathLoss).apply(); }));
+        r2.addView(small("Walls / clutter +", v -> { mesh.pathLoss = Math.min(4.0, mesh.pathLoss + 0.1); prefs.edit().putFloat("pl", (float) mesh.pathLoss).apply(); }));
         root.addView(r2);
         root.addView(text("Laptop view (same Wi-Fi or this phone's hotspot):", 14, true, "#0B3A4A"));
         addr = text("", 13, false, "#0B3A4A");
@@ -264,10 +274,11 @@ public class MainActivity extends Activity {
         if (r.getScanRecord() == null || mesh == null) return;
         SparseArray<byte[]> m = r.getScanRecord().getManufacturerSpecificData();
         byte[] d = m == null ? null : m.get(COMPANY);
-        int[] pkt = TrioMath.decode(d);
+        TrioMath.Packet pkt = TrioMath.decode(d);
         if (pkt == null) return;
+        if (pkt.reported.length != n) { sizeMismatch = pkt.reported.length; return; }
         trioSeen++;
-        mesh.onPacket(pkt[0], r.getRssi(), new int[]{pkt[1], pkt[2], pkt[3]}, System.currentTimeMillis());
+        mesh.onPacket(pkt.from, r.getRssi(), pkt.reported, System.currentTimeMillis());
     }
 
     // ---------- advertising (updatable set, with a restart fallback for phones that refuse it) ----------
@@ -289,13 +300,13 @@ public class MainActivity extends Activity {
         @Override public void onStartSuccess(AdvertiseSettings s) { advStarting = false; advertising = true; advNote = "Advertising (restart mode)."; }
         @Override public void onStartFailure(int e) {
             advStarting = false; advertising = false;
-            advNote = "Advertising failed (code " + e + ")" + (e == 5 ? ": this phone cannot advertise over BLE, so it cannot be one of the three." : e == 2 ? ": too many advertisers, close other Bluetooth apps." : "");
+            advNote = "Advertising failed (code " + e + ")" + (e == 5 ? ": this phone cannot advertise over BLE, so it cannot join the mesh." : e == 2 ? ": too many advertisers, close other Bluetooth apps." : "");
         }
     };
 
     private void startAdvertising(BluetoothAdapter a) {
         advertiser = a.getBluetoothLeAdvertiser();
-        if (advertiser == null) { advNote = "This phone has no BLE advertising (no peripheral mode), so it cannot be one of the three."; return; }
+        if (advertiser == null) { advNote = "This phone has no BLE advertising (no peripheral mode), so it cannot join the mesh."; return; }
         advStarting = true;
         if (!useLegacy) {
             try {
@@ -341,32 +352,30 @@ public class MainActivity extends Activity {
                 tryStart();
                 pushPayload();
                 long now = System.currentTimeMillis();
-                boolean[] heard = new boolean[3];
+                boolean[] heard = new boolean[n];
                 int nHeard = 0;
-                for (int k = 0; k < 3; k++) { heard[k] = mesh.heard(k, now); if (heard[k]) nHeard++; }
-                double[] d = mesh.distances(now);
-                int[] q = new int[3];
+                for (int k = 0; k < n; k++) { heard[k] = mesh.heard(k, now); if (k != me && heard[k]) nHeard++; }
+                double[][] d = mesh.distances(now);
+                int[][] q = new int[n][n];
                 StringBuilder sb = new StringBuilder();
-                sb.append("link   A hears B  B hears A   dist\n");
-                String[] names = {"A-B", "A-C", "B-C"};
-                for (int p = 0; p < 3; p++) {
-                    int a = TrioMath.pairA(p), b = TrioMath.pairB(p);
+                sb.append("link   hears / heard-by    dist\n");
+                for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) {
                     double ab = mesh.directional(a, b, now), ba = mesh.directional(b, a, now);
-                    q[p] = (Double.isNaN(ab) ? 0 : 1) + (Double.isNaN(ba) ? 0 : 1);
-                    String hdr = names[p];
-                    sb.append(String.format(Locale.US, "%s %9s %9s %7s\n", hdr, Double.isNaN(ab) ? "-" : String.format(Locale.US, "%.0f dBm", ab),
-                            Double.isNaN(ba) ? "-" : String.format(Locale.US, "%.0f dBm", ba), Double.isNaN(d[p]) ? "-" : String.format(Locale.US, "%.1f m", d[p])));
+                    q[a][b] = q[b][a] = (Double.isNaN(ab) ? 0 : 1) + (Double.isNaN(ba) ? 0 : 1);
+                    sb.append(String.format(Locale.US, "%c-%c %6s / %-6s %7s\n", (char) ('A' + a), (char) ('A' + b), Double.isNaN(ab) ? "-" : String.format(Locale.US, "%.0f", ab),
+                            Double.isNaN(ba) ? "-" : String.format(Locale.US, "%.0f", ba), Double.isNaN(d[a][b]) ? "-" : String.format(Locale.US, "%.1f m", d[a][b])));
                 }
                 table.setText(sb.toString());
-                triView.set(mesh.triangle(now), d, q, heard, me);
+                triView.set(mesh.layout(now), d, q, heard, me);
                 if (advertising && scanning && !status.getText().toString().startsWith("Calibrated"))
-                    status.setText(nHeard == 2 ? "Both other phones in range" : nHeard == 1 ? "One other phone in range" : "No other phone in range yet");
+                    status.setText(nHeard == n - 1 ? "All other devices in range" : nHeard + " of " + (n - 1) + " other devices in range");
                 advLine.setText("Beacon role: " + (advertising ? "on" : "off") + ". " + advNote);
                 String scanMsg = "Receiver role: " + (scanning ? "on" : "off") + ". Bluetooth packets heard: " + anySeen + ", Trio packets: " + trioSeen + ".";
+                if (sizeMismatch != 0) scanMsg += "\nAnother device uses a mesh of " + sizeMismatch + " devices; this one is set to " + n + ". Set every device to the same number.";
                 if (scanning && anySeen == 0 && now - scanStarted > 6000) scanMsg += "\nHears nothing: check Location is ON and Nearby devices + Location are allowed.";
-                else if (scanning && anySeen > 0 && trioSeen == 0 && now - scanStarted > 8000) scanMsg += "\nScanning works but no other Trio phone yet. Is it running and close?";
+                else if (scanning && anySeen > 0 && trioSeen == 0 && sizeMismatch == 0 && now - scanStarted > 8000) scanMsg += "\nScanning works but no other Trio device yet. Is it running and close?";
                 scanLine.setText(scanMsg);
-                calInfo.setText(String.format(Locale.US, "Real A–B distance to use: %.1f m   |   1 m reading: %.0f dBm   |   path-loss exponent: %.1f", knownMetres, mesh.rssi1m, mesh.n));
+                calInfo.setText(String.format(Locale.US, "Real A–B distance to use: %.1f m   |   1 m reading: %.0f dBm   |   path-loss exponent: %.1f", knownMetres, mesh.rssi1m, mesh.pathLoss));
                 StringBuilder u = new StringBuilder();
                 for (String ip : ips()) u.append("http://").append(ip).append(':').append(PORT).append("/\n");
                 if (u.length() == 0) u.append("(no network: turn on this phone's hotspot or join Wi-Fi)\n");

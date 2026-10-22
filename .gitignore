@@ -5,3 +5,4 @@ android/local.properties
 *.iml
 *.apk
 tests/out/
+__pycache__/
